@@ -1,10 +1,16 @@
 ---
-name: CI
+name: CI/CD
 
 on:
   push:
     branches:
       - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -12,20 +18,16 @@ env:
 
 jobs:
   docker-build:
+    name: Build and Push Docker Image
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
-      - id: lower-repo
-        name: Repository to lowercase
-        run: |
-          echo "repository=${IMAGE_NAME@L}" >> $GITHUB_OUTPUT
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        with:
+          fetch-depth: 0  # Required for metadata action to work with tags
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -39,15 +41,29 @@ jobs:
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v4
+        uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ github.event.repository.name }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push latest
+      - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           labels: ${{ steps.meta.outputs.labels }}
-          tags: ${{ env.REGISTRY }}/${{ steps.lower-repo.outputs.repository }}:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ steps.meta.outputs.version }}
